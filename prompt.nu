@@ -9,7 +9,6 @@ const _icons = {
 	folder: ""
 	home: ""
 	lock: ""
-	path_sep: ""
 	python: ""
 	node: ""
 	os_apple: ""
@@ -58,7 +57,6 @@ def _hex_to_rgb [hex: string] {
 let _theme = (try { $theme } catch { {} })
 
 let _palette = {
-	base: (_hex_to_rgb $_theme.base?)
 	text: (_hex_to_rgb ($_theme.crust?))
 	cwd: (_hex_to_rgb $_theme.green?)
 	duration: (_hex_to_rgb $_theme.sapphire?)
@@ -82,15 +80,94 @@ def _text_rgb [] {
 
 def _paint_face [bg_rgb, fg_rgb=null] { (_bg_rgb $bg_rgb) + (_fg_rgb ($fg_rgb | default (_text_rgb))) }
 
-## (debug helpers removed for cleanliness)
-
-let _clr_dirty = (_fg_rgb $_palette.git.dirty)
-let _clr_ahead = (_fg_rgb $_palette.git.ahead)
-let _clr_behind = (_fg_rgb $_palette.git.behind)
 let _batt_rgb_hi = (_hex_to_rgb $_theme.green?)
 let _batt_rgb_mid = (_hex_to_rgb $_theme.yellow?)
 let _batt_rgb_lo = (_hex_to_rgb $_theme.red?)
 let _clr_user = (_fg_rgb (_hex_to_rgb $_theme.mauve?))
+
+def _battery_info [] {
+	let os_name = ($nu.os-info.name? | default "" | str downcase)
+	if ($os_name =~ "darwin|mac") {
+		if (which pmset | is-empty) { return null }
+		let lines_raw = (pmset -g batt | lines)
+		let raw = ($lines_raw | get 1? | default "")
+		let power_src = ($lines_raw | get 0? | default "")
+		if ($raw | is-empty) { return null }
+		let parsed = ($raw | parse --regex '(?P<pct>[0-9]{1,3})%; (?P<state>[^;]+);' | get 0? | default {})
+		let pct_str = ($parsed.pct? | default "")
+		if ($pct_str | is-empty) { return null }
+		let p = ($pct_str | into int)
+		let state = ($parsed.state? | default "" | str trim | str downcase)
+		let on_ac = ($power_src | str contains "AC Power")
+		let charging = if ($state == "charging") { true } else if ($state == "finishing charge") { true } else if ($state == "charged") { false } else { $on_ac and ($state != "discharging") }
+		{ percent: $p, state: $state, charging: $charging, on_ac: $on_ac }
+	} else if ($os_name =~ "win") {
+		let pwsh = if (which pwsh | is-empty) {
+			if (which powershell | is-empty) { null } else { "powershell" }
+		} else { "pwsh" }
+		if ($pwsh == null) { return null }
+		let script = 'Get-CimInstance -ClassName Win32_Battery | Select-Object -First 1 EstimatedChargeRemaining,BatteryStatus | ConvertTo-Json -Compress'
+		let res = (do { ^$pwsh "-NoProfile" "-Command" $script } | complete)
+		if ($res.exit_code != 0) { return null }
+		let payload = ($res.stdout | str trim)
+		if ($payload | is-empty) { return null }
+		let parsed = (try { $payload | from json } catch { null })
+		if ($parsed == null) { return null }
+		let entry = (try { $parsed | get 0 } catch { $parsed })
+		if ($entry == null) { return null }
+		let pct_val = ($entry.EstimatedChargeRemaining? | default null)
+		if ($pct_val == null) { return null }
+		let pct = ($pct_val | into int)
+		let status_code = ($entry.BatteryStatus? | default 0 | into int)
+		let state = match $status_code {
+			1 => "discharging",
+			2 => "ac",
+			3 => "full",
+			4 => "low",
+			5 => "critical",
+			6 => "charging",
+			7 => "charging",
+			8 => "charging",
+			9 => "charging",
+			10 => "charging",
+			11 => "discharging",
+			12 => "discharging",
+			default => ""
+		}
+		let charging = $status_code in [2 3 6 7 8 9 10]
+		let on_ac = $status_code in [2 3 6 7 8 9 10]
+		{ percent: $pct, state: ($state | str downcase), charging: $charging, on_ac: $on_ac }
+	} else {
+		let bat_dirs = (['/sys/class/power_supply/BAT0', '/sys/class/power_supply/BAT1', '/sys/class/power_supply/Battery']
+			| each {|p|
+				let check = (do { ls $p } | complete)
+				if ($check.exit_code == 0) { $p } else { null }
+			}
+			| where {|p| $p != null })
+		let bat_dir = ($bat_dirs | get 0? | default "")
+		if ($bat_dir == "") { return null }
+		let cap_path = (path join [$bat_dir "capacity"])
+		let cap_contents = (try { open $cap_path } catch { null })
+		if ($cap_contents == null) { return null }
+		let pct = ($cap_contents | str trim | into int)
+		let status_path = (path join [$bat_dir "status"])
+		let state_raw = (try { open $status_path } catch { "" })
+		let state = ($state_raw | str trim | str downcase)
+		let charging = ($state =~ 'charge' or $state == "full")
+		let ac_dirs = (['/sys/class/power_supply/AC', '/sys/class/power_supply/AC0', '/sys/class/power_supply/Mains']
+			| each {|p|
+				let check = (do { ls $p } | complete)
+				if ($check.exit_code == 0) { $p } else { null }
+			}
+			| where {|p| $p != null })
+		let on_ac = if ($ac_dirs | is-empty) { $charging } else {
+			let ac_path = (path join [($ac_dirs | get 0) "online"])
+			let ac_val = (try { open $ac_path } catch { null })
+			if ($ac_val == null) { $charging } else { ($ac_val | str trim) == "1" }
+		}
+		{ percent: $pct, state: $state, charging: $charging, on_ac: $on_ac }
+	}
+}
 
 def _os_icon [] {
 	let name = ($nu.os-info.name? | default "" | str downcase)
@@ -103,11 +180,6 @@ def _os_icon [] {
 	} else {
 		$_icons.os_default
 	}
-}
-
-def _git_icon [icon icon_rgb bg_rgb fg_reset] {
-	let color = if $icon_rgb == $bg_rgb { $_palette.text } else { $icon_rgb }
-	$" ((_fg_rgb $color))($icon)($fg_reset)"
 }
 
 def _last_command_duration [raw=null] {
@@ -165,9 +237,20 @@ def --env _git_segment [] {
 	let state = if ($ahead > 0 and $behind > 0) { "diverge" } else if $dirty > 0 { "dirty" } else if $ahead > 0 { "ahead" } else if $behind > 0 { "behind" } else { "clean" }
 	let git_rgb = ($_palette.git | get $state)
 	mut icons = ""
-	if $dirty > 0 { $icons = $icons + (_git_icon $_icons.dirty $_palette.git.dirty $git_rgb $fg_git) }
-	if $ahead > 0 { $icons = $icons + (_git_icon ("$_icons.ahead" + ($ahead | into string)) $_palette.git.ahead $git_rgb $fg_git) }
-	if $behind > 0 { $icons = $icons + (_git_icon ("$_icons.behind" + ($behind | into string)) $_palette.git.behind $git_rgb $fg_git) }
+	if $dirty > 0 {
+		let dirty_rgb = if $_palette.git.dirty == $git_rgb { $_palette.text } else { $_palette.git.dirty }
+		$icons = $icons + $" ((_fg_rgb $dirty_rgb))($_icons.dirty)($fg_git)"
+	}
+	if $ahead > 0 {
+		let ahead_icon = "$_icons.ahead" + ($ahead | into string)
+		let ahead_rgb = if $_palette.git.ahead == $git_rgb { $_palette.text } else { $_palette.git.ahead }
+		$icons = $icons + $" ((_fg_rgb $ahead_rgb))($ahead_icon)($fg_git)"
+	}
+	if $behind > 0 {
+		let behind_icon = "$_icons.behind" + ($behind | into string)
+		let behind_rgb = if $_palette.git.behind == $git_rgb { $_palette.text } else { $_palette.git.behind }
+		$icons = $icons + $" ((_fg_rgb $behind_rgb))($behind_icon)($fg_git)"
+	}
 	mut summary_parts = []
 	if $staged > 0 { $summary_parts = ($summary_parts | append ($"($_icons.git_staged) ($staged)")) }
 	if $untracked > 0 { $summary_parts = ($summary_parts | append ($"($_icons.git_untracked) ($untracked)")) }
@@ -190,25 +273,18 @@ def --env _git_segment [] {
 }
 
 def _battery_pill [] {
-	if (which pmset | is-empty) { return "" }
-	let lines_raw = (pmset -g batt | lines)
-	let raw = ($lines_raw | get 1? | default "")
-	let power_src = ($lines_raw | get 0? | default "")
-	if ($raw | is-empty) { return "" }
-	let parsed = ($raw | parse --regex '(?P<pct>[0-9]{1,3})%; (?P<state>[^;]+);' | get 0? | default {})
-	let pct_str = ($parsed.pct? | default "")
-	if ($pct_str | is-empty) { return "" }
-	let p = ($pct_str | into int)
+	let info = (_battery_info)
+	if ($info == null) { return "" }
+	let pct_val = ($info.percent? | default null)
+	if ($pct_val == null) { return "" }
+	let p = ($pct_val | into int)
 	let icon = if $p >= 95 { $_icons.batt_full } else if $p >= 70 { $_icons.batt_75 } else if $p >= 45 { $_icons.batt_50 } else if $p >= 20 { $_icons.batt_25 } else { $_icons.batt_empty }
-	let state = ($parsed.state? | default "" | str trim | str downcase)
-	# Common states: 'discharging', 'charging', 'finishing charge', 'charged'
-	let charging = if ($state == "charging") { true } else if ($state == "finishing charge") { true } else if ($state == "charged") { false } else { ($power_src | str contains "AC Power") and ($state != "discharging") }
-	# Add a space between lightning (charging) icon and battery glyph
-	let plug_icon = (if $charging { $_icons.batt_charge } else if ($power_src | str contains "AC Power") { $_icons.batt_plug } else { "" })
+	let charging = ($info.charging? | default false)
+	let on_ac = ($info.on_ac? | default $charging)
+	let plug_icon = (if $charging { $_icons.batt_charge } else if $on_ac { $_icons.batt_plug } else { "" })
 	let display_icon = if ($plug_icon | is-empty) { $icon } else { $plug_icon + " " + $icon }
 	let bg_rgb = if $p >= 70 { $_batt_rgb_hi } else if $p >= 35 { $_batt_rgb_mid } else { $_batt_rgb_lo }
-	# Add an extra space before the percentage for clarity
-	_pill_segment ($"($display_icon)  ($pct_str)%") $bg_rgb
+	_pill_segment ($"($display_icon)  ($p)%") $bg_rgb
 }
 
 def _ordinal_suffix [day: int] {
