@@ -1,4 +1,7 @@
-source $"($nu.default-config-dir)/themes/catppuccin_mocha.nu"
+# ── Theme configuration -----------------------------------------------------
+
+const _theme_default_file = "catppuccin_mocha.nu"
+const _theme_default_path = $"($nu.default-config-dir)/themes/($_theme_default_file)"
 
 const _clr_reset = (ansi reset)
 const _ESC = "\u{1b}"
@@ -35,17 +38,41 @@ const _icons = {
 	batt_plug: "󰚥"
 }
 
+def _resolve_theme_path [file] { # resolve theme filename to absolute path
+	let trimmed = ($file | default "" | str trim)
+	if ($trimmed | is-empty) { return "" }
+	if ($trimmed =~ '^[~\\/]' or $trimmed =~ '^[A-Za-z]:') {
+		try { $trimmed | path expand } catch { $trimmed }
+	} else {
+		$"($nu.default-config-dir)/themes/($trimmed)"
+	}
+}
+
+let _theme_file = ($env.PROMPT_THEME_FILE? | default $_theme_default_file)
+let _theme_path_override = ($env.PROMPT_THEME_PATH? | default "" | str trim)
+let _theme_path = ( if (not ($_theme_path_override | is-empty)) { try { $_theme_path_override | path expand } catch { $_theme_path_override } } else { (_resolve_theme_path $_theme_file) | default $_theme_default_path } )
+let _theme_available = ( if ($_theme_path | is-empty) { false } else { ($_theme_path | path exists) } )
+
+# Source default theme when present (sets $env.config.color_config)
+if ($_theme_path_override | is-empty) {
+	if $_theme_available {
+		if ($_theme_default_path | path exists) {
+			source $_theme_default_path
+		}
+	}
+}
+
 def _no_powerline [] { $env.NO_POWERLINE? | default false }
 
-def _fg_rgb [rgb] {
+def _fg_rgb [rgb] { # ANSI 24-bit foreground
 	$"($_ESC)[38;2;($rgb | get 0);($rgb | get 1);($rgb | get 2)m"
 }
 
-def _bg_rgb [rgb] {
+def _bg_rgb [rgb] { # ANSI 24-bit background
 	$"($_ESC)[48;2;($rgb | get 0);($rgb | get 1);($rgb | get 2)m"
 }
 
-def _hex_to_rgb [hex: string] {
+def _hex_to_rgb [hex: string] { # convert #RRGGBB/#RGB → [r g b]
 	let clean = ($hex | str trim | str downcase | str replace --regex '^#' '')
 	let full = if ($clean | str length) == 3 { $clean | split chars | each {|c| $c + $c } | str join '' } else { $clean }
 	let six = ($full + "000000" | str substring 0..<(6))
@@ -54,36 +81,64 @@ def _hex_to_rgb [hex: string] {
 	[($caps.r | into int --radix 16) ($caps.g | into int --radix 16) ($caps.b | into int --radix 16)]
 }
 
-let _theme = (try { $theme } catch { {} })
+
+def _load_theme [] { # parse `let theme = { ... }` body to record
+	if (not $_theme_available) { return {} }
+	let raw = (try { open --raw $_theme_path } catch { "" })
+	if ($raw | str trim | is-empty) { return {} }
+	let captured = ($raw | parse --regex '(?s)let\s+theme\s*=\s*(?P<body>\{.*?\})' | get 0? | default {})
+	let body = ($captured.body? | default "" | str trim)
+	if ($body | is-empty) { return {} }
+	try { $body | from nuon } catch { {} }
+}
+
+let _theme = (scope variables | where name == "theme" | get -o 0.value | default (_load_theme))
+
+let _fallback_theme = {
+	crust: "#d7d7d7"
+	text: "#d7d7d7"
+	green: "#00af87"
+	sapphire: "#268bd2"
+	peach: "#ffaf5f"
+	sky: "#5fafff"
+	mauve: "#d7afff"
+	red: "#ff5f5f"
+	teal: "#5fd7af"
+	yellow: "#ffd75f"
+}
+
+def _color_or [theme_val fallback_hex] { # theme color with hex fallback
+	_hex_to_rgb ($theme_val | default $fallback_hex)
+}
 
 let _palette = {
-	text: (_hex_to_rgb ($_theme.crust?))
-	cwd: (_hex_to_rgb $_theme.green?)
-	duration: (_hex_to_rgb $_theme.sapphire?)
+	text: (_color_or $_theme.crust? $_fallback_theme.crust)
+	cwd: (_color_or $_theme.green? $_fallback_theme.green)
+	duration: (_color_or $_theme.sapphire? $_fallback_theme.sapphire)
+	info: (_color_or $_theme.teal? $_fallback_theme.teal)
 	git: {
-		clean: (_hex_to_rgb $_theme.green?)
-		dirty: (_hex_to_rgb $_theme.peach?)
-		ahead: (_hex_to_rgb $_theme.sky?)
-		behind: (_hex_to_rgb $_theme.mauve?)
-		diverge: (_hex_to_rgb $_theme.red?)
-	}
-	info: (_hex_to_rgb $_theme.teal?)
-}
-
-def _text_rgb [] {
-	if ($env.PROMPT_LIGHT_TEXT? | default false) {
-		_hex_to_rgb ($_theme.text? | default $_theme.crust?)
-	} else {
-		$_palette.text
+		clean: (_color_or $_theme.green? $_fallback_theme.green)
+		dirty: (_color_or $_theme.peach? $_fallback_theme.peach)
+		diverge: (_color_or $_theme.red? $_fallback_theme.red)
+		ahead: (_color_or $_theme.sky? $_fallback_theme.sky)
+		behind: (_color_or $_theme.mauve? $_fallback_theme.mauve)
 	}
 }
 
-def _paint_face [bg_rgb, fg_rgb=null] { (_bg_rgb $bg_rgb) + (_fg_rgb ($fg_rgb | default (_text_rgb))) }
+def _paint_face [bg_rgb text_rgb=null] {
+	(_bg_rgb $bg_rgb) + (_fg_rgb ($text_rgb | default $_palette.text))
+}
 
-let _batt_rgb_hi = (_hex_to_rgb $_theme.green?)
-let _batt_rgb_mid = (_hex_to_rgb $_theme.yellow?)
-let _batt_rgb_lo = (_hex_to_rgb $_theme.red?)
-let _clr_user = (_fg_rgb (_hex_to_rgb $_theme.mauve?))
+let _batt_rgb_hi = (_color_or $_theme.green? $_fallback_theme.green)
+let _batt_rgb_mid = (_color_or $_theme.yellow? $_fallback_theme.yellow)
+let _batt_rgb_lo = (_color_or $_theme.red? $_fallback_theme.red)
+let _clr_user = (_fg_rgb (_color_or $_theme.mauve? $_fallback_theme.mauve))
+
+def _find_sys_dir [candidates: list<string>] {
+	$candidates | where {|p| (do { ls $p } | complete).exit_code == 0 } | get 0? | default ""
+}
+
+# ── System information ------------------------------------------------------
 
 def _battery_info [] {
 	let os_name = ($nu.os-info.name? | default "" | str downcase)
@@ -119,33 +174,20 @@ def _battery_info [] {
 		if ($pct_val == null) { return null }
 		let pct = ($pct_val | into int)
 		let status_code = ($entry.BatteryStatus? | default 0 | into int)
-		let state = match $status_code {
-			1 => "discharging",
-			2 => "ac",
-			3 => "full",
-			4 => "low",
-			5 => "critical",
-			6 => "charging",
-			7 => "charging",
-			8 => "charging",
-			9 => "charging",
-			10 => "charging",
-			11 => "discharging",
-			12 => "discharging",
-			default => ""
+		let charging_codes = [2 3 6 7 8 9 10]
+		let state = if $status_code in $charging_codes {
+			"charging"
+		} else if $status_code in [1 11 12] {
+			"discharging"
+		} else {
+			match $status_code { 3 => "full", 4 => "low", 5 => "critical", _ => "" }
 		}
-		let charging = $status_code in [2 3 6 7 8 9 10]
-		let on_ac = $status_code in [2 3 6 7 8 9 10]
+		let charging = $status_code in $charging_codes
+		let on_ac = $status_code in $charging_codes
 		{ percent: $pct, state: ($state | str downcase), charging: $charging, on_ac: $on_ac }
 	} else {
-		let bat_dirs = (['/sys/class/power_supply/BAT0', '/sys/class/power_supply/BAT1', '/sys/class/power_supply/Battery']
-			| each {|p|
-				let check = (do { ls $p } | complete)
-				if ($check.exit_code == 0) { $p } else { null }
-			}
-			| where {|p| $p != null })
-		let bat_dir = ($bat_dirs | get 0? | default "")
-		if ($bat_dir == "") { return null }
+		let bat_dir = (_find_sys_dir ['/sys/class/power_supply/BAT0' '/sys/class/power_supply/BAT1' '/sys/class/power_supply/Battery'])
+		if ($bat_dir | is-empty) { return null }
 		let cap_path = (path join [$bat_dir "capacity"])
 		let cap_contents = (try { open $cap_path } catch { null })
 		if ($cap_contents == null) { return null }
@@ -154,15 +196,11 @@ def _battery_info [] {
 		let state_raw = (try { open $status_path } catch { "" })
 		let state = ($state_raw | str trim | str downcase)
 		let charging = ($state =~ 'charge' or $state == "full")
-		let ac_dirs = (['/sys/class/power_supply/AC', '/sys/class/power_supply/AC0', '/sys/class/power_supply/Mains']
-			| each {|p|
-				let check = (do { ls $p } | complete)
-				if ($check.exit_code == 0) { $p } else { null }
-			}
-			| where {|p| $p != null })
-		let on_ac = if ($ac_dirs | is-empty) { $charging } else {
-			let ac_path = (path join [($ac_dirs | get 0) "online"])
-			let ac_val = (try { open $ac_path } catch { null })
+		let ac_dir = (_find_sys_dir ['/sys/class/power_supply/AC' '/sys/class/power_supply/AC0' '/sys/class/power_supply/Mains'])
+		let on_ac = if ($ac_dir | is-empty) {
+			$charging
+		} else {
+			let ac_val = (try { open (path join [$ac_dir "online"]) } catch { null })
 			if ($ac_val == null) { $charging } else { ($ac_val | str trim) == "1" }
 		}
 		{ percent: $pct, state: $state, charging: $charging, on_ac: $on_ac }
@@ -193,6 +231,8 @@ def _last_command_duration [raw=null] {
 		$"($secs).($pad) s"
 	}
 }
+
+# ── Git prompt segment ------------------------------------------------------
 
 def --env _git_segment [] {
 	if (which git | is-empty) { return "" }
@@ -229,28 +269,16 @@ def --env _git_segment [] {
 	let unstaged = $unstaged_tracked + $sparse
 	let untracked = ($lines | where {|line| $line =~ '^\? ' } | length)
 	let conflicts = ($lines | where {|line| $line =~ '^u ' } | length)
-	if ($env.PROMPT_DEBUG_GIT? | default false) {
-		print $"[git debug] dirty=($dirty) staged=($staged) unstaged=($unstaged) untracked=($untracked) conflicts=($conflicts) ahead=($ahead) behind=($behind)"
-	}
-	let fg_git = (_fg_rgb (_text_rgb))
+	let fg_git = (_fg_rgb $_palette.text)
 	let branch_text = $"($_icons.branch) ($branch)"
 	let state = if ($ahead > 0 and $behind > 0) { "diverge" } else if $dirty > 0 { "dirty" } else if $ahead > 0 { "ahead" } else if $behind > 0 { "behind" } else { "clean" }
 	let git_rgb = ($_palette.git | get $state)
+	
 	mut icons = ""
-	if $dirty > 0 {
-		let dirty_rgb = if $_palette.git.dirty == $git_rgb { $_palette.text } else { $_palette.git.dirty }
-		$icons = $icons + $" ((_fg_rgb $dirty_rgb))($_icons.dirty)($fg_git)"
-	}
-	if $ahead > 0 {
-		let ahead_icon = "$_icons.ahead" + ($ahead | into string)
-		let ahead_rgb = if $_palette.git.ahead == $git_rgb { $_palette.text } else { $_palette.git.ahead }
-		$icons = $icons + $" ((_fg_rgb $ahead_rgb))($ahead_icon)($fg_git)"
-	}
-	if $behind > 0 {
-		let behind_icon = "$_icons.behind" + ($behind | into string)
-		let behind_rgb = if $_palette.git.behind == $git_rgb { $_palette.text } else { $_palette.git.behind }
-		$icons = $icons + $" ((_fg_rgb $behind_rgb))($behind_icon)($fg_git)"
-	}
+	if $dirty > 0 { $icons = $icons + $" ((_fg_rgb (if ($_palette.git.dirty == $git_rgb) { $_palette.text } else { $_palette.git.dirty })))($_icons.dirty)($fg_git)" }
+	if $ahead > 0 { $icons = $icons + $" ((_fg_rgb (if ($_palette.git.ahead == $git_rgb) { $_palette.text } else { $_palette.git.ahead })))($_icons.ahead)($ahead)($fg_git)" }
+	if $behind > 0 { $icons = $icons + $" ((_fg_rgb (if ($_palette.git.behind == $git_rgb) { $_palette.text } else { $_palette.git.behind })))($_icons.behind)($behind)($fg_git)" }
+	
 	mut summary_parts = []
 	if $staged > 0 { $summary_parts = ($summary_parts | append ($"($_icons.git_staged) ($staged)")) }
 	if $untracked > 0 { $summary_parts = ($summary_parts | append ($"($_icons.git_untracked) ($untracked)")) }
@@ -272,6 +300,9 @@ def --env _git_segment [] {
 	$"($left)($core)($right)($_clr_reset)"
 }
 
+# ── Battery & HUD widgets ---------------------------------------------------
+
+# Battery indicator pill
 def _battery_pill [] {
 	let info = (_battery_info)
 	if ($info == null) { return "" }
@@ -287,14 +318,11 @@ def _battery_pill [] {
 	_pill_segment ($"($display_icon)  ($p)%") $bg_rgb
 }
 
+# ── Prompt composition helpers ---------------------------------------------
+
 def _ordinal_suffix [day: int] {
-	let teens = ($day mod 100)
-	if $teens in 11..13 {
-		"th"
-	} else {
-		match ($day mod 10) {
-			1 => "st", 2 => "nd", 3 => "rd", _ => "th"
-		}
+	if (($day mod 100) in 11..13) { "th" } else {
+		match ($day mod 10) { 1 => "st", 2 => "nd", 3 => "rd", _ => "th" }
 	}
 }
 
@@ -307,16 +335,15 @@ def _project_icons [pwd shown] {
 	let base_icon = if ($shown | str starts-with "~") { $_icons.home } else { $_icons.folder }
 	let meta = (try { metadata $pwd } catch { {} })
 	let read_only = ($meta.permissions?.readonly? | default false)
-	mut icons = [$base_icon]
-	if $read_only { $icons = ($icons | append $_icons.lock) }
-	let has_py_env = (not (($env.VIRTUAL_ENV? | default "") | is-empty))
-	let has_py_files = (['pyproject.toml' 'requirements.txt' 'setup.py' '.venv'] | any {|file| (path join [$pwd $file]) | path exists })
-	if ($has_py_env or $has_py_files) { $icons = ($icons | append $_icons.python) }
-	let has_node_files = (['package.json' 'pnpm-lock.yaml' 'yarn.lock' 'bun.lockb' 'node_modules'] | any {|file| (path join [$pwd $file]) | path exists })
-	if $has_node_files { $icons = ($icons | append $_icons.node) }
-	$icons | str join " "
+	let has_py = (not (($env.VIRTUAL_ENV? | default "") | is-empty)) or (['pyproject.toml' 'requirements.txt' 'setup.py' '.venv'] | any {|f| (path join [$pwd $f]) | path exists })
+	let has_node = (['package.json' 'pnpm-lock.yaml' 'yarn.lock' 'bun.lockb' 'node_modules'] | any {|f| (path join [$pwd $f]) | path exists })
+	
+	[$base_icon, (if $read_only { $_icons.lock }), (if $has_py { $_icons.python }), (if $has_node { $_icons.node })]
+		| where {|x| $x != null and $x != "" }
+		| str join " "
 }
 
+# Render a pill-shaped segment with bg color
 def _pill_segment [text: string, rgb] {
 	let face = (_paint_face $rgb)
 	if (_no_powerline) {
@@ -327,6 +354,7 @@ def _pill_segment [text: string, rgb] {
 	}
 }
 
+# CWD segment with optional command duration
 def _cwd [duration_raw=null] {
 	let home = $nu.home-path
 	let pwd = (pwd)
@@ -337,29 +365,24 @@ def _cwd [duration_raw=null] {
 	if ($duration | is-empty) {
 		(_pill_segment $base_label $_palette.cwd)
 	} else {
-		let cwd_bg_rgb = $_palette.cwd
-		let dur_bg_rgb = $_palette.duration
-		let text_rgb = (_text_rgb)
-		let cwd_face = (_paint_face $cwd_bg_rgb $text_rgb)
-		let dur_face = (_paint_face $dur_bg_rgb $text_rgb)
+		let cwd_bg = $_palette.cwd
+		let dur_bg = $_palette.duration
+		let text_rgb = $_palette.text
+		let cwd_face = (_paint_face $cwd_bg $text_rgb)
+		let dur_face = (_paint_face $dur_bg $text_rgb)
 		let dur_tokens = (_duration_tokens $duration)
-		# Build seamless divide with a single seam:
-		# - seam1 () uses fg=cwd_bg, bg=dur_bg; then switch to dur_fg for content
-		let seam1_fg = (_fg_rgb $cwd_bg_rgb)
-		let seam1_bg = (_bg_rgb $dur_bg_rgb)
-		let seam1 = $"($seam1_fg)($seam1_bg)"
+		let seam = $"((_fg_rgb $cwd_bg))((_bg_rgb $dur_bg))"
 		if (_no_powerline) {
-			$"($cwd_face) ($base_label)  ($seam1)($dur_face) ($_icons.duration)  ($dur_tokens.value) ($dur_tokens.unit) ($_clr_reset)"
+			$"($cwd_face) ($base_label)  ($seam)($dur_face) ($_icons.duration)  ($dur_tokens.value) ($dur_tokens.unit) ($_clr_reset)"
 		} else {
-			let left_sep = (_fg_rgb $cwd_bg_rgb) + $_powerline.left
-			let left_core = $"($cwd_face) ($base_label)  "
-			let right_block = $"($seam1)($dur_face) ($_icons.duration)  ($dur_tokens.value) ($dur_tokens.unit) "
-			let right_corner = $_clr_reset + (_fg_rgb $dur_bg_rgb) + $_powerline.right + $_clr_reset
-			$"($left_sep)($left_core)($right_block)($right_corner)"
+			let left = $"((_fg_rgb $cwd_bg))($_powerline.left)($cwd_face) ($base_label)  "
+			let right = $"($seam)($dur_face) ($_icons.duration)  ($dur_tokens.value) ($dur_tokens.unit) ($_clr_reset)((_fg_rgb $dur_bg))($_powerline.right)($_clr_reset)"
+			$"($left)($right)"
 		}
 	}
 }
 
+# Top line: cwd + git segments
 def _prompt_line1 [] {
 	let segments = ([(_cwd ($env.CMD_DURATION_MS? | default null)), (_git_segment)] | where $it != "")
 	if ($segments | is-empty) {
@@ -369,12 +392,15 @@ def _prompt_line1 [] {
 	}
 }
 
+# Bottom line: user and prompt glyph
 def _prompt_line2 [] {
 	let user = ($env.USER? | default (whoami))
 	$"($_clr_user)╰╼($_icons.user) ($user)($_icons.prompt)($_clr_reset) "
 }
 
+# Compose primary and right prompts
 $env.PROMPT_COMMAND = { || (_prompt_line1) + "\n" + (_prompt_line2) }
+# Right prompt: OS icon + date/time + battery
 $env.PROMPT_COMMAND_RIGHT = { ||
 	let now = (date now)
 	let day_num = ($now | format date "%d" | into int)
