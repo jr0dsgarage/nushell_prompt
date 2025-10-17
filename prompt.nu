@@ -135,7 +135,7 @@ let _batt_rgb_lo = (_color_or $_theme.red? $_fallback_theme.red)
 let _clr_user = (_fg_rgb (_color_or $_theme.mauve? $_fallback_theme.mauve))
 
 def _find_sys_dir [candidates: list<string>] {
-	$candidates | where {|p| (do { ls $p } | complete).exit_code == 0 } | get 0? | default ""
+	$candidates | where {|p| (try { ls $p; true } catch { false }) } | get 0? | default ""
 }
 
 # ── System information ------------------------------------------------------
@@ -188,19 +188,22 @@ def _battery_info [] {
 	} else {
 		let bat_dir = (_find_sys_dir ['/sys/class/power_supply/BAT0' '/sys/class/power_supply/BAT1' '/sys/class/power_supply/Battery'])
 		if ($bat_dir | is-empty) { return null }
-		let cap_path = (path join [$bat_dir "capacity"])
+		
+		let cap_path = ([$bat_dir "capacity"] | path join)
 		let cap_contents = (try { open $cap_path } catch { null })
 		if ($cap_contents == null) { return null }
-		let pct = ($cap_contents | str trim | into int)
-		let status_path = (path join [$bat_dir "status"])
+		let pct = (try { $cap_contents | str trim | into int } catch { 0 })
+		
+		let status_path = ([$bat_dir "status"] | path join)
 		let state_raw = (try { open $status_path } catch { "" })
 		let state = ($state_raw | str trim | str downcase)
 		let charging = ($state =~ 'charge' or $state == "full")
+		
 		let ac_dir = (_find_sys_dir ['/sys/class/power_supply/AC' '/sys/class/power_supply/AC0' '/sys/class/power_supply/Mains'])
 		let on_ac = if ($ac_dir | is-empty) {
 			$charging
 		} else {
-			let ac_val = (try { open (path join [$ac_dir "online"]) } catch { null })
+			let ac_val = (try { open ([$ac_dir "online"] | path join) } catch { null })
 			if ($ac_val == null) { $charging } else { ($ac_val | str trim) == "1" }
 		}
 		{ percent: $pct, state: $state, charging: $charging, on_ac: $on_ac }
