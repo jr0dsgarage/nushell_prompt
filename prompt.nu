@@ -224,7 +224,25 @@ def _os_icon [] {
 }
 
 def _last_command_duration [raw=null] {
-	let ms = ($raw | default ($env.CMD_DURATION_MS? | default null) | if $in == null { return "" } else { $in | into int })
+	let raw_duration = ($raw | default ($env.CMD_DURATION_MS? | default null))
+	
+	# Check if we have the bogus "0823" string that appears on fresh shell startup
+	if $raw_duration == "0823" {
+		# Use actual startup time instead of the bogus value
+		let startup_ms = (($nu.startup-time | into int) / 1_000_000 | math round)
+		if $startup_ms < 1000 {
+			return $"($startup_ms) ms"
+		} else {
+			let secs = ($startup_ms / 1000)
+			let rem = ($startup_ms mod 1000)
+			let pad = if $rem >= 100 { $rem } else if $rem >= 10 { $"0($rem)" } else { $"00($rem)" }
+			return $"($secs).($pad) s"
+		}
+	}
+	
+	# Convert to int for normal processing
+	let ms = ($raw_duration | if $in == null { return "" } else { $in | into int })
+	
 	if $ms < 1000 {
 		$"($ms) ms"
 	} else {
